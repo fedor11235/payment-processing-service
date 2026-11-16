@@ -1,0 +1,58 @@
+name: Проверки
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Стиль, миграции и интеграционные тесты
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: payments
+          POSTGRES_PASSWORD: payments-local
+          POSTGRES_DB: payments
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payments -d payments"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.1-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: payments
+          RABBITMQ_DEFAULT_PASS: payments-local
+        ports: ["5672:5672", "15672:15672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://payments:payments-local@localhost:5432/payments
+      TEST_DATABASE_URL: postgresql+asyncpg://payments:payments-local@localhost:5432/payments
+      TEST_RABBITMQ_URL: amqp://payments:payments-local@localhost:5672/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.10"
+          enable-cache: true
+      - name: Установить Python и зависимости
+        run: uv sync --frozen --python 3.13
+      - name: Проверить стиль
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Проверить миграции в обе стороны
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Запустить тесты с PostgreSQL и RabbitMQ
+        run: uv run pytest -q
+      - name: Проверить Docker-сборку
+        run: docker compose build api

@@ -1,8 +1,10 @@
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 from faststream import AckPolicy
+from faststream.rabbit import RabbitBroker
 from faststream.rabbit.annotations import RabbitMessage
 from pydantic import ValidationError
 
@@ -15,6 +17,29 @@ from app.schemas import PaymentEvent
 logger = logging.getLogger(__name__)
 
 
+def register_consumer(broker: RabbitBroker, processor: PaymentProcessor) -> None:
+    @broker.subscriber(PAYMENTS_QUEUE, EVENTS_EXCHANGE, ack_policy=AckPolicy.REJECT_ON_ERROR)
+    async def consume(body: Any, message: RabbitMessage):
+        try:
+            event = PaymentEvent.model_validate(body)
+        except ValidationError:
+            logger.warning("Некорректное событие отправлено в DLQ")
+            await message.reject(requeue=False)
+            return
+        try:
+            await processor.handle(event)
+        except MissingPayment:
+            await message.reject(requeue=False)
+        except Exception:
+            # Без доступной БД нельзя надежно записать попытку и retry в outbox.
+            logger.exception("Ошибка инфраструктуры; сообщение возвращено в очередь")
+            await asyncio.sleep(1)
+            await message.nack(requeue=True)
+        else:
+            # Retry/DLQ уже сохранены транзакционно до подтверждения сообщения.
+            await message.ack()
+
+
 async def run() -> None:
     settings = Settings()
     database = Database(settings.database_url)
@@ -23,28 +48,7 @@ async def run() -> None:
         timeout=settings.webhook_timeout, follow_redirects=False
     ) as client:
         processor = PaymentProcessor(database, EmulatedGateway(settings), client)
-
-        @broker.subscriber(PAYMENTS_QUEUE, EVENTS_EXCHANGE, ack_policy=AckPolicy.MANUAL)
-        async def consume(body: dict, message: RabbitMessage):
-            try:
-                event = PaymentEvent.model_validate(body)
-            except ValidationError:
-                logger.warning("Некорректное событие отправлено в DLQ")
-                await message.reject(requeue=False)
-                return
-            try:
-                await processor.handle(event)
-            except MissingPayment:
-                await message.reject(requeue=False)
-            except Exception:
-                # Без доступной БД нельзя надежно записать попытку и retry в outbox.
-                logger.exception("Ошибка инфраструктуры; сообщение возвращено в очередь")
-                await asyncio.sleep(1)
-                await message.nack(requeue=True)
-            else:
-                # Retry/DLQ уже сохранены транзакционно до подтверждения сообщения.
-                await message.ack()
-
+        register_consumer(broker, processor)
         try:
             await broker.connect()
             await declare_topology(broker)

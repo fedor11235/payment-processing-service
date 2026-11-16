@@ -20,9 +20,11 @@ from app.schemas import PaymentAccepted, PaymentCreate, PaymentDetail
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-def create_app(settings: Settings | None = None, *, run_outbox: bool = True) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, run_outbox: bool = True, database: Database | None = None
+) -> FastAPI:
     settings = settings or Settings()
-    database = Database(settings.database_url)
+    database = database or Database(settings.database_url)
 
     async def authenticate(key: Annotated[str | None, Depends(api_key_header)]):
         if key is None or not hmac.compare_digest(
@@ -101,6 +103,7 @@ def create_app(settings: Settings | None = None, *, run_outbox: bool = True) -> 
             description=payment.description,
             metadata=payment.metadata_,
             webhook_url=payment.webhook_url,
+            idempotency_key=payment.idempotency_key,
             processed_at=payment.processed_at,
             webhook_delivered_at=payment.webhook_delivered_at,
             delivery_failed_at=payment.delivery_failed_at,

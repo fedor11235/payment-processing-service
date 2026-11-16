@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     api_key: SecretStr = SecretStr("dev-api-key-change-me")
-    database_url: str = "postgresql+asyncpg://payments:payments-local@localhost:5432/payments"
+    database_url: str = "postgresql+asyncpg://payments:payments-local@localhost:55432/payments"
     rabbitmq_url: str = "amqp://payments:payments-local@localhost:5672/"
     outbox_poll_interval: float = 0.5
     webhook_timeout: float = 5.0
